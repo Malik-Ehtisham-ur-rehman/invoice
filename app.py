@@ -161,30 +161,46 @@ def main():
                 # Update progress
                 progress_bar.progress((i + 1) / len(uploaded_files))
             
-            # Convert to DataFrame and export to Excel
+            # Convert to DataFrame and export to CSV (more compatible with Streamlit Share)
             if all_invoice_data:
                 df = pd.DataFrame(all_invoice_data)
-                
-                # Create a temporary file for the Excel
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-                    excel_path = tmp.name
-                    df.to_excel(excel_path, index=False)
                 
                 # Show preview of the data
                 st.subheader("Data Preview")
                 st.dataframe(df)
                 
-                # Provide download link
-                with open(excel_path, "rb") as file:
-                    st.download_button(
-                        label="Download Excel",
-                        data=file,
-                        file_name="invoice_data.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                # Create CSV for download instead of Excel
+                csv = df.to_csv(index=False)
                 
-                # Clean up the temp file
-                os.unlink(excel_path)
+                # Provide download link
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name="invoice_data.csv",
+                    mime="text/csv"
+                )
+                
+                # Optionally, still provide Excel if user wants it
+                try:
+                    # Create a temporary file for the Excel
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
+                        excel_path = tmp.name
+                        df.to_excel(excel_path, index=False)
+                    
+                    # Provide download link for Excel
+                    with open(excel_path, "rb") as file:
+                        st.download_button(
+                            label="Download Excel (may not work on Streamlit Share)",
+                            data=file,
+                            file_name="invoice_data.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="excel_download"
+                        )
+                    
+                    # Clean up the temp file
+                    os.unlink(excel_path)
+                except ImportError:
+                    st.info("Excel export not available. Install openpyxl for Excel support.")
             else:
                 st.warning("No data was extracted from the PDFs.")
 
