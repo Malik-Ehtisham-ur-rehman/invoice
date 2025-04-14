@@ -8,6 +8,7 @@ import fitz  # PyMuPDF
 import io
 import json
 import re
+import datetime
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -20,29 +21,78 @@ genai.configure(api_key=api_key)
 # Initialize Gemini model - using gemini-1.5-flash
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-def extract_images_from_pdf(pdf_file):
-    """Extract images from PDF file"""
-    # Open the PDF file
-    pdf_document = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    images = []
+# Define limitations
+MAX_INVOICE_IMAGES = 5  # Maximum images per session
+MAX_INVOICES_PER_WEEK = 15  # Maximum invoices per week globally
+
+# Initialize session state for global usage tracking
+if 'usage_initialized' not in st.session_state:
+    st.session_state.usage_initialized = True
     
-    # Iterate through each page
-    for page_num in range(len(pdf_document)):
-        page = pdf_document[page_num]
-        image_list = page.get_images(full=True)
+    # Create usage tracking variables if they don't exist
+    if 'weekly_usage' not in st.session_state:
+        st.session_state.weekly_usage = []
         
-        # Extract each image
-        for img_index, img in enumerate(image_list):
-            xref = img[0]
-            base_image = pdf_document.extract_image(xref)
-            image_bytes = base_image["image"]
-            
-            # Convert to PIL Image
-            image = Image.open(io.BytesIO(image_bytes))
-            images.append(image)
+    # Clean up old usage entries (older than a week)
+    current_time = datetime.datetime.now()
+    one_week_ago = current_time - datetime.timedelta(days=7)
+    st.session_state.weekly_usage = [
+        timestamp for timestamp in st.session_state.weekly_usage 
+        if timestamp > one_week_ago
+    ]
+
+def get_weekly_usage_count():
+    """Count how many invoices have been processed in the past week"""
+    # All timestamps in weekly_usage are already within the last week
+    return len(st.session_state.weekly_usage)
+
+def update_usage(num_invoices):
+    """Update the global usage with new invoices"""
+    current_time = datetime.datetime.now()
     
-    pdf_document.close()
-    return images
+    # Add new timestamps (one for each invoice)
+    for _ in range(num_invoices):
+        st.session_state.weekly_usage.append(current_time)
+
+def extract_images_from_pdf(pdf_files, max_images=MAX_INVOICE_IMAGES):
+    """Extract images from multiple PDF files, up to the max limit"""
+    all_images = []
+    
+    for pdf_file in pdf_files:
+        # Store the original position to reset later
+        pdf_file.seek(0)
+        
+        # Check if we've already reached the maximum
+        if len(all_images) >= max_images:
+            break
+            
+        # Open the PDF file
+        pdf_document = fitz.open(stream=pdf_file.read(), filetype="pdf")
+        
+        # Iterate through each page
+        for page_num in range(len(pdf_document)):
+            if len(all_images) >= max_images:
+                break
+                
+            page = pdf_document[page_num]
+            image_list = page.get_images(full=True)
+            
+            # Extract each image
+            for img_index, img in enumerate(image_list):
+                if len(all_images) >= max_images:
+                    break
+                    
+                xref = img[0]
+                base_image = pdf_document.extract_image(xref)
+                image_bytes = base_image["image"]
+                
+                # Convert to PIL Image
+                image = Image.open(io.BytesIO(image_bytes))
+                all_images.append({"image": image, "pdf_name": pdf_file.name})
+        
+        pdf_document.close()
+        
+    return all_images
 
 def extract_invoice_data(image):
     """Extract invoice data from an image using Gemini"""
@@ -106,60 +156,91 @@ def flatten_items(items):
 
 def main():
     st.title("PDF Invoice Data Extractor")
-    st.write("Upload multiple PDFs containing invoice images, and get an Excel sheet with the extracted data.")
+    
+    # Check weekly usage
+    weekly_usage = get_weekly_usage_count()
+    remaining_weekly_limit = MAX_INVOICES_PER_WEEK - weekly_usage
+    
+    # Display current usage information
+    st.write("Upload PDFs containing invoice images, and get an Excel sheet with the extracted data.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"Limitation: Maximum {MAX_INVOICE_IMAGES} invoice images per session")
+    with col2:
+        if remaining_weekly_limit <= 0:
+            st.error(f"Weekly limit reached: {weekly_usage}/{MAX_INVOICES_PER_WEEK} invoices processed this week.")
+        else:
+            st.info(f"Weekly usage: {weekly_usage}/{MAX_INVOICES_PER_WEEK} invoices processed this week")
     
     # File uploader
     uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
     
-    if uploaded_files:
+    if uploaded_files and remaining_weekly_limit > 0:
         if st.button("Extract Data"):
+            # Extract all images first (limited to MAX_INVOICE_IMAGES)
+            image_data = extract_images_from_pdf(uploaded_files, MAX_INVOICE_IMAGES)
+            
+            if not image_data:
+                st.warning("No images found in the uploaded PDFs.")
+                return
+                
+            st.info(f"Found {len(image_data)} invoice images. Processing...")
+            
+            # Check if processing these would exceed weekly limit
+            if weekly_usage + len(image_data) > MAX_INVOICES_PER_WEEK:
+                actual_process_count = MAX_INVOICES_PER_WEEK - weekly_usage
+                st.warning(f"Processing only {actual_process_count} invoices to stay within the weekly limit of {MAX_INVOICES_PER_WEEK}.")
+                image_data = image_data[:actual_process_count]
+            
             all_invoice_data = []
             progress_bar = st.progress(0)
             
-            for i, pdf_file in enumerate(uploaded_files):
-                st.write(f"Processing: {pdf_file.name}")
+            for i, img_info in enumerate(image_data):
+                image = img_info["image"]
+                pdf_name = img_info["pdf_name"]
                 
-                # Extract images from PDF
-                images = extract_images_from_pdf(pdf_file)
+                col1, col2 = st.columns(2)
                 
-                if not images:
-                    st.warning(f"No images found in {pdf_file.name}")
-                    continue
+                with col1:
+                    st.image(image, caption=f"Image {i+1} from {pdf_name}", width=300)
                 
-                # Display each image and extract data
-                for j, image in enumerate(images):
-                    col1, col2 = st.columns(2)
+                with col2:
+                    # Add unique key to each text_area to fix the error
+                    raw_data = extract_invoice_data(image)
+                    st.text_area(
+                        label=f"Extracted Data {i+1}", 
+                        value=raw_data, 
+                        height=250,
+                        key=f"text_area_{i}"  # Unique key for each text area
+                    )
                     
-                    with col1:
-                        st.image(image, caption=f"Image {j+1} from {pdf_file.name}", width=300)
+                    # Parse JSON from the extracted text
+                    parsed_data = parse_json_from_text(raw_data)
                     
-                    with col2:
-                        raw_data = extract_invoice_data(image)
-                        st.text_area(f"Extracted Data {j+1}", raw_data, height=250)
+                    if parsed_data:
+                        # Extract the main fields
+                        invoice_entry = {
+                            "PDF_File": pdf_name,
+                            "Invoice_Number": parsed_data.get("Invoice Number", ""),
+                            "Invoice_Date": parsed_data.get("Invoice Date", ""),
+                            "Vendor_Name": parsed_data.get("Vendor/Company Name", ""),
+                            "Total_Amount": parsed_data.get("Total Amount", "")
+                        }
                         
-                        # Parse JSON from the extracted text
-                        parsed_data = parse_json_from_text(raw_data)
+                        # Handle items differently - flatten them for Excel
+                        items = parsed_data.get("Items", [])
+                        invoice_entry["Items_Summary"] = flatten_items(items)
                         
-                        if parsed_data:
-                            # Extract the main fields
-                            invoice_entry = {
-                                "PDF_File": pdf_file.name,
-                                "Invoice_Number": parsed_data.get("Invoice Number", ""),
-                                "Invoice_Date": parsed_data.get("Invoice Date", ""),
-                                "Vendor_Name": parsed_data.get("Vendor/Company Name", ""),
-                                "Total_Amount": parsed_data.get("Total Amount", "")
-                            }
-                            
-                            # Handle items differently - flatten them for the Excel
-                            items = parsed_data.get("Items", [])
-                            invoice_entry["Items_Summary"] = flatten_items(items)
-                            
-                            all_invoice_data.append(invoice_entry)
-                        else:
-                            st.warning(f"Could not parse JSON data from extraction {j+1}")
+                        all_invoice_data.append(invoice_entry)
+                    else:
+                        st.warning(f"Could not parse JSON data from extraction {i+1}")
                 
                 # Update progress
-                progress_bar.progress((i + 1) / len(uploaded_files))
+                progress_bar.progress((i + 1) / len(image_data))
+            
+            # Update global usage with the number of processed invoices
+            update_usage(len(all_invoice_data))
             
             # Convert to DataFrame and export to CSV (more compatible with Streamlit Share)
             if all_invoice_data:
@@ -203,6 +284,8 @@ def main():
                     st.info("Excel export not available. Install openpyxl for Excel support.")
             else:
                 st.warning("No data was extracted from the PDFs.")
+    elif remaining_weekly_limit <= 0:
+        st.error("The weekly limit for all users has been reached. Please try again next week.")
 
 if __name__ == "__main__":
     main()
