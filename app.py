@@ -9,6 +9,7 @@ import io
 import json
 import re
 import datetime
+import time
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -25,34 +26,74 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 MAX_INVOICE_IMAGES = 5  # Maximum images per session
 MAX_INVOICES_PER_WEEK = 15  # Maximum invoices per week globally
 
-# Initialize session state for global usage tracking
-if 'usage_initialized' not in st.session_state:
-    st.session_state.usage_initialized = True
-    
-    # Create usage tracking variables if they don't exist
-    if 'weekly_usage' not in st.session_state:
-        st.session_state.weekly_usage = []
-        
-    # Clean up old usage entries (older than a week)
-    current_time = datetime.datetime.now()
-    one_week_ago = current_time - datetime.timedelta(days=7)
-    st.session_state.weekly_usage = [
-        timestamp for timestamp in st.session_state.weekly_usage 
-        if timestamp > one_week_ago
-    ]
+# File path for storing usage data
+USAGE_FILE_PATH = ".streamlit/usage_data.json"
+
+def ensure_directory_exists():
+    """Make sure the .streamlit directory exists"""
+    os.makedirs(os.path.dirname(USAGE_FILE_PATH), exist_ok=True)
+
+def load_usage_data():
+    """Load global usage data from file"""
+    ensure_directory_exists()
+    try:
+        if os.path.exists(USAGE_FILE_PATH):
+            with open(USAGE_FILE_PATH, 'r') as f:
+                data = json.load(f)
+                return data
+        else:
+            # Initialize with empty data
+            return {"timestamps": []}
+    except Exception as e:
+        st.error(f"Error loading usage data: {e}")
+        return {"timestamps": []}
+
+def save_usage_data(data):
+    """Save usage data to file"""
+    ensure_directory_exists()
+    try:
+        with open(USAGE_FILE_PATH, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        st.error(f"Error saving usage data: {e}")
 
 def get_weekly_usage_count():
     """Count how many invoices have been processed in the past week"""
-    # All timestamps in weekly_usage are already within the last week
-    return len(st.session_state.weekly_usage)
+    usage_data = load_usage_data()
+    
+    # Convert string timestamps back to datetime objects
+    timestamps = []
+    for ts_str in usage_data.get("timestamps", []):
+        try:
+            timestamps.append(datetime.datetime.fromisoformat(ts_str))
+        except ValueError:
+            # Skip invalid timestamps
+            pass
+    
+    # Filter for last week
+    now = datetime.datetime.now()
+    one_week_ago = now - datetime.timedelta(days=7)
+    
+    # Only count timestamps from the past week
+    recent_timestamps = [ts for ts in timestamps if ts > one_week_ago]
+    
+    # Clean up old timestamps (optional, keeps the file from growing indefinitely)
+    if len(recent_timestamps) < len(timestamps):
+        usage_data["timestamps"] = [ts.isoformat() for ts in recent_timestamps]
+        save_usage_data(usage_data)
+    
+    return len(recent_timestamps)
 
 def update_usage(num_invoices):
     """Update the global usage with new invoices"""
-    current_time = datetime.datetime.now()
+    usage_data = load_usage_data()
+    now = datetime.datetime.now()
     
     # Add new timestamps (one for each invoice)
     for _ in range(num_invoices):
-        st.session_state.weekly_usage.append(current_time)
+        usage_data.setdefault("timestamps", []).append(now.isoformat())
+    
+    save_usage_data(usage_data)
 
 def extract_images_from_pdf(pdf_files, max_images=MAX_INVOICE_IMAGES):
     """Extract images from multiple PDF files, up to the max limit"""
@@ -161,7 +202,7 @@ def main():
     weekly_usage = get_weekly_usage_count()
     remaining_weekly_limit = MAX_INVOICES_PER_WEEK - weekly_usage
     
-    # Display current usage information
+    # Display current usage information and time of data
     st.write("Upload PDFs containing invoice images, and get an Excel sheet with the extracted data.")
     
     col1, col2 = st.columns(2)
@@ -172,6 +213,11 @@ def main():
             st.error(f"Weekly limit reached: {weekly_usage}/{MAX_INVOICES_PER_WEEK} invoices processed this week.")
         else:
             st.info(f"Weekly usage: {weekly_usage}/{MAX_INVOICES_PER_WEEK} invoices processed this week")
+    
+    # Current week info
+    current_time = datetime.datetime.now()
+    week_start = current_time - datetime.timedelta(days=7)
+    st.caption(f"Current weekly period: {week_start.strftime('%Y-%m-%d')} to {current_time.strftime('%Y-%m-%d')}")
     
     # File uploader
     uploaded_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
@@ -242,6 +288,9 @@ def main():
             # Update global usage with the number of processed invoices
             update_usage(len(all_invoice_data))
             
+            # Refresh weekly usage display
+            st.experimental_rerun()
+            
             # Convert to DataFrame and export to CSV (more compatible with Streamlit Share)
             if all_invoice_data:
                 df = pd.DataFrame(all_invoice_data)
@@ -285,7 +334,7 @@ def main():
             else:
                 st.warning("No data was extracted from the PDFs.")
     elif remaining_weekly_limit <= 0:
-        st.error("The weekly limit for all users has been reached. Please try again next week.")
+        st.error("The weekly limit has been reached. Please try again next week.")
 
 if __name__ == "__main__":
     main()
