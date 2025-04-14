@@ -310,10 +310,7 @@ def main():
             # Update global usage with the number of processed invoices
             update_usage(len(all_invoice_data))
             
-            # Update weekly usage display - use st.rerun() instead of st.experimental_rerun()
-            st.rerun()
-            
-            # Convert to DataFrame and export to CSV (more compatible with Streamlit Share)
+            # Convert to DataFrame and export to CSV/Excel
             if all_invoice_data:
                 df = pd.DataFrame(all_invoice_data)
                 
@@ -342,7 +339,7 @@ def main():
                     # Provide download link for Excel
                     with open(excel_path, "rb") as file:
                         st.download_button(
-                            label="Download Excel (may not work on Streamlit Share)",
+                            label="Download Excel",
                             data=file,
                             file_name="invoice_data.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -351,10 +348,15 @@ def main():
                     
                     # Clean up the temp file
                     os.unlink(excel_path)
-                except ImportError:
-                    st.info("Excel export not available. Install openpyxl for Excel support.")
+                except Exception as e:
+                    st.error(f"Excel export error: {e}")
+                    st.info("If Excel export fails, please use the CSV option.")
             else:
                 st.warning("No data was extracted from the PDFs.")
+                
+            # Remove the st.rerun() call here to prevent the app from refreshing and losing the data
+            # st.rerun()  # This was causing the problem!
+            
     elif remaining_weekly_limit <= 0:
         st.error("The weekly limit has been reached. Please try again next week.")
 
