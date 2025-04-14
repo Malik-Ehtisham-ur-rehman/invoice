@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import tempfile
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import google.generativeai as genai
 import fitz  # PyMuPDF
 import io
@@ -10,6 +10,7 @@ import json
 import re
 import datetime
 import time
+import numpy as np
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -28,6 +29,28 @@ MAX_INVOICES_PER_WEEK = 15  # Maximum invoices per week globally
 
 # File path for storing usage data
 USAGE_FILE_PATH = ".streamlit/usage_data.json"
+
+def text_to_image(text, width=400, padding=10):
+    """Convert text to image to prevent copying"""
+    # Calculate needed height based on text length
+    font_size = 12
+    lines = text.count('\n') + 1
+    height = max(lines * (font_size + 4) + padding * 2, 250)  # Minimum height of 250px
+    
+    # Create image with white background
+    img = Image.new('RGB', (width, height), color='white')
+    d = ImageDraw.Draw(img)
+    
+    # Use default font
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except IOError:
+        font = ImageFont.load_default()
+    
+    # Draw text
+    d.text((padding, padding), text, fill='black', font=font)
+    
+    return img
 
 def ensure_directory_exists():
     """Make sure the .streamlit directory exists"""
@@ -252,14 +275,13 @@ def main():
                     st.image(image, caption=f"Image {i+1} from {pdf_name}", width=300)
                 
                 with col2:
-                    # Add unique key to each text_area to fix the error
+                    # Extract the data
                     raw_data = extract_invoice_data(image)
-                    st.text_area(
-                        label=f"Extracted Data {i+1}", 
-                        value=raw_data, 
-                        height=250,
-                        key=f"text_area_{i}"  # Unique key for each text area
-                    )
+                    
+                    # Display as an image to prevent copying
+                    st.markdown(f"**Extracted Data {i+1}:**")
+                    json_image = text_to_image(raw_data)
+                    st.image(json_image, caption="Preview only - copying disabled")
                     
                     # Parse JSON from the extracted text
                     parsed_data = parse_json_from_text(raw_data)
@@ -288,8 +310,8 @@ def main():
             # Update global usage with the number of processed invoices
             update_usage(len(all_invoice_data))
             
-            # Refresh weekly usage display
-            st.experimental_rerun()
+            # Update weekly usage display - use st.rerun() instead of st.experimental_rerun()
+            st.rerun()
             
             # Convert to DataFrame and export to CSV (more compatible with Streamlit Share)
             if all_invoice_data:
